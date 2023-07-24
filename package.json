@@ -1,0 +1,47 @@
+{
+  "name": "superlru",
+  "description": "Super LRU Cache. Compression, Encryption and backed by Redis",
+  "version": "1.0.0",
+  "author": "jayson jacobs",
+  "bin": {
+    "producer": "./bin/run"
+  },
+  "repository": "j4ys0n/superlru",
+  "bugs": "https://github.com/j4ys0n/superlru/issues",
+  "homepage": "https://github.com/j4ys0n/superlru",
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com/"
+  },
+  "dependencies": {
+    "redis": "^4.0.4",
+    "tslib": "^2.3.1"
+  },
+  "devDependencies": {
+    "@types/jest": "^24.0.23",
+    "@types/node": "^16.15",
+    "@typescript-eslint/eslint-plugin": "^2.10.0",
+    "@typescript-eslint/parser": "^2.10.0",
+    "eslint": "^6.7.2",
+    "eslint-config-prettier": "^6.7.0",
+    "eslint-plugin-prettier": "^3.1.1",
+    "jest": "^24.9.0",
+    "prettier": "^1.19.1",
+    "ts-jest": "^24.2.0",
+    "typescript": "^4.7.4"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "files": [
+    "/lib"
+  ],
+  "license": "Apache-2.0",
+  "main": "lib/index.js",
+  "scripts": {
+    "lint": "eslint . --ext .ts --config .eslintrc",
+    "build": "rm -rf lib && tsc -b",
+    "test": "jest --config jest.config.json",
+    "format": "git ls-files | grep -E \"\\.(jsx?|tsx?|css|md|ya?ml|json)$\" | xargs prettier --write"
+  },
+  "types": "lib/index.d.ts"
+}
