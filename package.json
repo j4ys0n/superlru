@@ -2,7 +2,10 @@
   "name": "superlru",
   "description": "Super LRU Cache. Compression, Encryption and backed by Redis",
   "version": "1.0.0",
-  "author": "jayson jacobs",
+  "author": {
+    "name": "jayson jacobs",
+    "email": "hello@ruigomes.me"
+  },
   "repository": "j4ys0n/superlru",
   "bugs": "https://github.com/j4ys0n/superlru/issues",
   "homepage": "https://github.com/j4ys0n/superlru",

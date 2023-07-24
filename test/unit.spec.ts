@@ -1,6 +1,5 @@
 import crypto from 'crypto'
 import { compressValue, decompressValue, decryptValue, encryptValue, md5 } from '../src'
-import txn from './fixtures/791305.json'
 
 const encryption = {
   algo: 'aes-256-cbc',
@@ -46,15 +45,5 @@ describe('unit tests', () => {
     const { encrypted: encryptedNumber, type: typeNumber } = encryptValue(numberInput, encryption)
     const decryptedNumber = decryptValue(encryptedNumber, typeNumber, encryption)
     expect(decryptedNumber).toBe(numberInput)
-  })
-
-  it('should produce shoulder compressed values than uncompressed', () => {
-    console.log('uncompressed', JSON.stringify(txn).length)
-    const compressed = compressValue(txn)
-    console.log('compressed', compressed.length)
-    const { encrypted, type } = encryptValue(compressed, encryption)
-    // const compressedEncrypted = compressValue(encrypted)
-    console.log('compressed encrypted', encrypted.length)
-
   })
 })
