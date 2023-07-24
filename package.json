@@ -3,9 +3,6 @@
   "description": "Super LRU Cache. Compression, Encryption and backed by Redis",
   "version": "1.0.0",
   "author": "jayson jacobs",
-  "bin": {
-    "producer": "./bin/run"
-  },
   "repository": "j4ys0n/superlru",
   "bugs": "https://github.com/j4ys0n/superlru/issues",
   "homepage": "https://github.com/j4ys0n/superlru",
@@ -32,16 +29,13 @@
   "engines": {
     "node": ">=16.0.0"
   },
-  "files": [
-    "/lib"
-  ],
   "license": "Apache-2.0",
-  "main": "lib/index.js",
+  "main": "./lib/index.js",
+  "types": "./lib/index.d.ts",
   "scripts": {
     "lint": "eslint . --ext .ts --config .eslintrc",
     "build": "rm -rf lib && tsc -b",
     "test": "jest --config jest.config.json",
     "format": "git ls-files | grep -E \"\\.(jsx?|tsx?|css|md|ya?ml|json)$\" | xargs prettier --write"
-  },
-  "types": "lib/index.d.ts"
+  }
 }
