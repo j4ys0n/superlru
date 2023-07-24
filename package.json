@@ -1,7 +1,7 @@
 {
   "name": "superlru",
   "description": "Super LRU Cache. Compression, Encryption and backed by Redis",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": {
     "name": "jayson jacobs",
     "email": "j4ys0n@gmail.com"

@@ -92,14 +92,16 @@ export class SuperLRU<K, V extends StandardType> implements Cache<K, V> {
   private valueType: string | null = null
   private encryption: EncryptionConfig = {
     algo: 'aes-256-cbc',
-    initVector: crypto.randomBytes(16),
-    securityKey: crypto.randomBytes(32)
+    initVector: Buffer.from('0x00'),
+    securityKey: Buffer.from('0x00')
   }
 
   constructor({
     maxSize,
     compress = true,
     encrypt = false,
+    initVector = crypto.randomBytes(16),
+    securityKey = crypto.randomBytes(32),
     onEvicted,
     writeThrough = false,
     redisConfig
@@ -111,6 +113,8 @@ export class SuperLRU<K, V extends StandardType> implements Cache<K, V> {
     maxSize: number
     compress?: boolean
     encrypt?: boolean
+    initVector?: Buffer
+    securityKey?: Buffer
     onEvicted?: KVFunction<K, V>
     writeThrough?: boolean
     redisConfig?: {
@@ -134,6 +138,10 @@ export class SuperLRU<K, V extends StandardType> implements Cache<K, V> {
     this.maxSize = maxSize
     this.compress = compress
     this.encrypt = encrypt
+    if (encrypt) {
+      this.encryption.initVector = initVector
+      this.encryption.securityKey = securityKey
+    }
     this.size = 0
     this.onEvicted = onEvicted
     this.writeThrough = writeThrough
