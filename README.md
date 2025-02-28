@@ -3,6 +3,7 @@
 A high-performance LRU (Least Recently Used) cache implementation for TypeScript and JavaScript applications.
 
 [![npm version](https://img.shields.io/npm/v/superlru.svg)](https://www.npmjs.com/package/superlru)
+[![npm downloads](https://img.shields.io/npm/dm/superlru.svg)](https://www.npmjs.com/package/superlru)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
 ## Features
