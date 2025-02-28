@@ -1,6 +1,7 @@
 {
   "compilerOptions": {
     "declaration": true,
+    "sourceMap": true,
     "importHelpers": true,
     "module": "commonjs",
     "outDir": "lib",
@@ -17,5 +18,5 @@
     "allowSyntheticDefaultImports": true
   },
   "include": ["src/**/*"],
-  "exclude": ["node_modules/**/*", "lib/**/*"]
+  "exclude": ["node_modules/**/*", "lib/**/*", "coverage/**/*"]
 }
