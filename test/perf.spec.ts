@@ -1,3 +1,4 @@
+import crypto from 'crypto'
 import { SuperLRU } from '../src'
 
 /**
@@ -8,7 +9,7 @@ import { SuperLRU } from '../src'
 describe('SuperLRU Performance Tests', () => {
   // Helper function to measure execution time
   function measureTime(fn: () => Promise<void>): Promise<number> {
-    return new Promise(async (resolve) => {
+    return new Promise(async resolve => {
       const start = process.hrtime.bigint()
       await fn()
       const end = process.hrtime.bigint()
@@ -82,7 +83,9 @@ describe('SuperLRU Performance Tests', () => {
       const iterations = 100
       const largeObject = {
         id: 'test',
-        data: Array(1000).fill(0).map(() => randomString(50))
+        data: Array(1000)
+          .fill(0)
+          .map(() => randomString(50))
       }
 
       // Test write performance with compression
@@ -114,7 +117,9 @@ describe('SuperLRU Performance Tests', () => {
       })
 
       // Log results
-      console.log(`Write time with compression: ${compressedWriteTime}ms (${compressedWriteTime / iterations}ms per item)`)
+      console.log(
+        `Write time with compression: ${compressedWriteTime}ms (${compressedWriteTime / iterations}ms per item)`
+      )
       console.log(`Write time without compression: ${rawWriteTime}ms (${rawWriteTime / iterations}ms per item)`)
       console.log(`Read time with compression: ${compressedReadTime}ms (${compressedReadTime / iterations}ms per item)`)
       console.log(`Read time without compression: ${rawReadTime}ms (${rawReadTime / iterations}ms per item)`)
@@ -131,7 +136,9 @@ describe('SuperLRU Performance Tests', () => {
       const encryptedCache = new SuperLRU<string, object>({
         maxSize: 1000,
         compress: false,
-        encrypt: true
+        encrypt: true,
+        initVector: crypto.randomBytes(16),
+        securityKey: crypto.randomBytes(32)
       })
 
       // Cache without encryption
@@ -212,7 +219,10 @@ describe('SuperLRU Performance Tests', () => {
       expect(cache.has(`key-0`)).toBe(false)
       expect(cache.has(`key-${iterations - 11}`)).toBe(false)
 
-      console.log(`Write time with high eviction rate (${iterations} items, cache size 10): ${writeTime}ms (${writeTime / iterations}ms per item)`)
+      console.log(
+        `Write time with high eviction rate (${iterations} items, cache size 10): ${writeTime}ms (${writeTime /
+          iterations}ms per item)`
+      )
     })
   })
 
@@ -248,7 +258,9 @@ describe('SuperLRU Performance Tests', () => {
       for (let i = 0; i < 10000; i++) {
         const largeObject = {
           id: `item-${i}`,
-          data: Array(largeObjectSize).fill(0).map(() => randomString(20))
+          data: Array(largeObjectSize)
+            .fill(0)
+            .map(() => randomString(20))
         }
         await cache.set(`key-${i}`, largeObject)
       }

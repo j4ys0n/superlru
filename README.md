@@ -31,8 +31,8 @@ pnpm add superlru
 import { SuperLRU } from 'superlru'
 
 // Create a type-safe cache instance
-const cache = new SuperLRU<string, { prop1: string, prop2: number }>({ 
-  maxSize: 100 
+const cache = new SuperLRU<string, { prop1: string; prop2: number }>({
+  maxSize: 100
 })
 
 // Set a value
@@ -44,20 +44,32 @@ await cache.set('key1', {
 // Get a value
 const value = await cache.get('key1')
 console.log(value) // { prop1: 'value', prop2: 12345.6789 }
+
+// Check if a key exists
+const exists = cache.has('key1') // true
+
+// Remove a value
+await cache.unset('key1')
+
+// Clear the entire cache
+await cache.clear()
 ```
 
 ## Configuration Options
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `maxSize` | `number` | *required* | Maximum number of entries in the cache |
-| `compress` | `boolean` | `true` | Enable gzip compression for stored values |
-| `encrypt` | `boolean` | `false` | Enable AES-256 encryption for stored values |
-| `initVector` | `Buffer` | `crypto.randomBytes(16)` | Initialization vector for encryption |
-| `securityKey` | `Buffer` | `crypto.randomBytes(32)` | Security key for encryption |
-| `onEvicted` | `Function` | `undefined` | Callback invoked when an item is evicted |
-| `writeThrough` | `boolean` | `false` | Enable Redis persistence |
-| `redisConfig` | `Object` | `undefined` | Redis connection configuration |
+| Option             | Type       | Default                  | Description                                                                                                  |
+| ------------------ | ---------- | ------------------------ | ------------------------------------------------------------------------------------------------------------ |
+| `maxSize`          | `number`   | _required_               | Maximum number of entries in the cache                                                                       |
+| `compress`         | `boolean`  | `true`                   | Enable gzip compression for stored values                                                                    |
+| `encrypt`          | `boolean`  | `false`                  | Enable AES-256 encryption for stored values                                                                  |
+| `initVector`       | `Buffer`   | `crypto.randomBytes(16)` | Initialization vector for encryption (required if `encrypt` is true and no custom key provided)              |
+| `securityKey`      | `Buffer`   | `crypto.randomBytes(32)` | Security key for encryption (required if `encrypt` is true and no custom key provided)                       |
+| `onEvicted`        | `Function` | `undefined`              | Callback invoked when an item is evicted due to capacity limits or `unset` calls (not called during `clear`) |
+| `writeThrough`     | `boolean`  | `false`                  | Enable Redis persistence                                                                                     |
+| `redisConfig`      | `Object`   | `undefined`              | Redis connection configuration (required if `writeThrough` is true)                                          |
+| `redisConfig.user` | `string`   | -                        | Redis username                                                                                               |
+| `redisConfig.pass` | `string`   | `''`                     | Redis password                                                                                               |
+| `redisConfig.host` | `string`   | -                        | Redis host and port (e.g., 'localhost:6379')                                                                 |
 
 ## Advanced Usage
 
@@ -75,6 +87,10 @@ const cache = new SuperLRU<string, object>({
     host: 'localhost:6379'
   }
 })
+
+// Operations like set, unset, and clear will interact with Redis
+await cache.set('persistentKey', { data: 'persists' })
+await cache.clear() // Clears in-memory and attempts to delete keys from Redis
 ```
 
 ### Encryption
@@ -82,12 +98,14 @@ const cache = new SuperLRU<string, object>({
 For sensitive data, enable encryption:
 
 ```typescript
+import crypto from 'crypto'
+
 const cache = new SuperLRU<string, object>({
   maxSize: 1000,
   encrypt: true,
-  // Optional: provide custom encryption keys
-  initVector: Buffer.from('your-init-vector'),
-  securityKey: Buffer.from('your-security-key')
+  // Provide custom encryption keys for deterministic behavior if needed
+  initVector: crypto.randomBytes(16), // Or a fixed Buffer
+  securityKey: crypto.randomBytes(32) // Or a fixed Buffer
 })
 ```
 
@@ -99,20 +117,27 @@ SuperLRU provides built-in statistics tracking:
 
 ```typescript
 // Set and get some values...
+await cache.set('statKey', 'statValue')
+await cache.get('statKey') // Hit
+await cache.get('missingKey') // Miss
 
 // Get cache statistics
 const stats = cache.stats()
-console.log(`Cache size: ${stats.size}`)
+console.log(`Cache size: ${stats.size}`) // Current number of items
 console.log(`Cache hits: ${stats.hits}`)
 console.log(`Cache misses: ${stats.misses}`)
 
-// Reset statistics
+// Get stats and reset hit/miss counters
 const statsAndReset = cache.stats(true)
+console.log(`Previous hits: ${statsAndReset.hits}`)
+
+const currentStats = cache.stats()
+console.log(`Current hits: ${currentStats.hits}`) // Should be 0
 ```
 
 ### Eviction Callback
 
-Register a callback to be notified when items are evicted:
+Register a callback to be notified when items are evicted due to capacity limits or explicit `unset` calls. Note: This callback is **not** invoked during a `clear()` operation.
 
 ```typescript
 const cache = new SuperLRU<string, object>({
@@ -122,6 +147,11 @@ const cache = new SuperLRU<string, object>({
     // Perform cleanup or logging
   }
 })
+
+await cache.set('key1', { data: 1 })
+// ... fill cache ...
+await cache.set('newKey', { data: 'new' }) // Might trigger eviction
+await cache.unset('key1') // Triggers eviction callback
 ```
 
 ## API Reference
@@ -132,16 +162,41 @@ const cache = new SuperLRU<string, object>({
 class SuperLRU<K, V extends Object | string | number> implements Cache<K, V>
 ```
 
+#### Constructor
+
+```typescript
+constructor(options: {
+  maxSize: number;
+  compress?: boolean;
+  encrypt?: boolean;
+  initVector?: Buffer;
+  securityKey?: Buffer;
+  onEvicted?: (key: K, value: V) => void;
+  writeThrough?: boolean;
+  redisConfig?: {
+    user: string;
+    pass?: string;
+    host: string;
+  };
+})
+```
+
+#### Properties
+
+- `size: number` - The current number of items in the cache.
+
 #### Methods
 
-- `has(key: K): boolean` - Check if a key exists in the cache
-- `get(key: K): Promise<V | null>` - Retrieve a value from the cache
-- `set(key: K, value: V): Promise<void>` - Store a value in the cache
-- `unset(key: K): Promise<void>` - Remove a value from the cache
-- `allEntries(): Array<[K, V]>` - Get all entries in the cache
-- `stats(flush?: boolean): { hits: number; misses: number; size: number }` - Get cache statistics
+- `has(key: K): boolean` - Checks if a key exists in the cache. Increments hit/miss counter.
+- `get(key: K): Promise<V | null>` - Retrieves a value from the cache. Updates LRU order on hit. Attempts Redis fetch on miss if `writeThrough` is enabled. Increments hit/miss counter.
+- `set(key: K, value: V): Promise<void>` - Stores or updates a value in the cache. Updates LRU order. Writes to Redis if `writeThrough` is enabled. Handles eviction if capacity is exceeded.
+- `unset(key: K): Promise<void>` - Removes a value from the cache. Calls `onEvicted` callback if defined. Deletes from Redis if `writeThrough` is enabled.
+- `clear(): Promise<void>` - Removes all entries from the in-memory cache. If `writeThrough` is enabled, it also attempts to delete the corresponding keys from Redis. Does **not** call `onEvicted`.
+- `allEntries(): Array<[K, V]>` - Returns an array of all `[key, value]` pairs currently in the cache. Values are decompressed/decrypted as needed.
+- `stats(flush?: boolean): { hits: number; misses: number; size: number }` - Returns cache statistics (hit count, miss count, current size). If `flush` is true, resets hit and miss counters to zero after returning.
 
 ## Performance test results
+
 ```
 Write time for 1000 items: 9.148125ms (0.009148125ms per item)
 Read hit time for 1000 items: 6.044292ms (0.006044292000000001ms per item)

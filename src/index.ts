@@ -31,17 +31,25 @@ type EncryptionConfig = {
 export function md5(data: Object | string | number): string {
   data = typeof data === 'number' ? data.toString() : data
   data = typeof data === 'string' ? data : JSON.stringify(data)
-  return crypto.createHash('md5').update(data as string).digest('hex')
+  return crypto
+    .createHash('md5')
+    .update(data as string)
+    .digest('hex')
 }
 
 /**
  * Compresses a value using gzip and returns a Base64 string.
+ * Handles undefined by compressing the string "null".
  * @template V - The type of the value.
  * @param {V} value - The value to compress.
  * @returns {string} The compressed value as a Base64 encoded string.
  */
 export function compressValue<V>(value: V): string {
-  return zlib.gzipSync(JSON.stringify(value)).toString('base64')
+  const stringified = JSON.stringify(value)
+  // JSON.stringify(undefined) returns undefined. We'll store it as the string "null".
+  // JSON.stringify(null) returns "null".
+  const bufferInput = stringified === undefined ? 'null' : stringified
+  return zlib.gzipSync(bufferInput).toString('base64')
 }
 
 /**
@@ -71,16 +79,19 @@ export function encryptValue<V extends StandardType>(
   const type = typeof value
   let str = ''
   if (type === 'object') {
-    str = JSON.stringify(value)
+    // Handle null explicitly, JSON.stringify(null) is 'null'
+    str = value === null ? 'null' : JSON.stringify(value)
   } else if (type === 'number') {
     str = value.toString()
+  } else if (type === 'undefined') {
+    // Store undefined as the string 'null' to be consistent with compression/JSON
+    str = 'null'
   } else {
     str = value as string
   }
   return {
-    encrypted:
-      cipher.update(str, 'utf-8', 'base64') + cipher.final('base64'),
-    type
+    encrypted: cipher.update(str, 'utf-8', 'base64') + cipher.final('base64'),
+    type // Store original type ('undefined', 'object', 'number', 'string')
   }
 }
 
@@ -88,19 +99,22 @@ export function encryptValue<V extends StandardType>(
  * Decrypts a value using the provided encryption configuration.
  * @template V - The expected type of the decrypted value.
  * @param {string} value - The encrypted value.
- * @param {string} type - The original type of the value.
+ * @param {string} type - The original type of the value ('object', 'number', 'string', 'undefined').
  * @param {EncryptionConfig} encryption - The encryption configuration.
  * @returns {V} The decrypted value.
  */
-export function decryptValue<V>(
-  value: string,
-  type: string,
-  encryption: EncryptionConfig
-): V {
+export function decryptValue<V>(value: string, type: string, encryption: EncryptionConfig): V {
   const { algo, securityKey, initVector } = encryption
   const decipher = crypto.createDecipheriv(algo, securityKey, initVector)
-  const decrypted =
-    decipher.update(value, 'base64', 'utf-8') + decipher.final('utf-8')
+  const decrypted = decipher.update(value, 'base64', 'utf-8') + decipher.final('utf-8')
+
+  // Handle the stored types correctly
+  if (type === 'undefined' || decrypted === 'null') {
+    // If original type was undefined, or decrypted value is 'null' (from null or undefined)
+    // return null as JSON.parse('null') does. We can't return actual undefined easily here.
+    // Consumers should be aware that undefined might become null.
+    return null as V
+  }
   if (type === 'number' || type === 'object') {
     return JSON.parse(decrypted) as V
   }
@@ -117,9 +131,10 @@ export interface Cache<K, V extends StandardType> {
   get(key: K): Promise<V | null>
   set(key: K, value: V): Promise<void>
   unset(key: K): Promise<void>
+  clear(): Promise<void> // Added clear method
   size: number
   allEntries(): Array<[K, V]>
-  stats(flush: boolean): { hits: number; misses: number; size: number }
+  stats(flush?: boolean): { hits: number; misses: number; size: number }
 }
 
 /**
@@ -129,10 +144,29 @@ export interface Cache<K, V extends StandardType> {
  */
 interface ListNode<K, V> {
   key: K
-  storedValue: V | string // value after applying compression/encryption if enabled
+  storedValue: string | V // value after applying compression/encryption if enabled
+  originalType: string // Store original type ('object', 'string', 'number', 'undefined') for decryption
   prev: ListNode<K, V> | null
   next: ListNode<K, V> | null
   timestamp: number // updated on access
+}
+
+/**
+ * Type definition for the constructor options object.
+ */
+export type SuperLRUOptions<K, V extends StandardType> = {
+  maxSize: number
+  compress?: boolean
+  encrypt?: boolean
+  initVector?: Buffer
+  securityKey?: Buffer
+  onEvicted?: KVFunction<K, V>
+  writeThrough?: boolean
+  redisConfig?: {
+    user: string
+    pass?: string
+    host: string
+  }
 }
 
 /**
@@ -153,79 +187,72 @@ export class SuperLRU<K, V extends StandardType> implements Cache<K, V> {
   private writeThrough: boolean
   private compress: boolean
   private encrypt: boolean
-  private valueType: string | null = null
   private encryption: EncryptionConfig
   private redis?: RedisClientType
 
   /**
    * Constructs a new SuperLRU cache instance.
-   * @param {object} options - Configuration options.
-   * @param {number} options.maxSize - Maximum number of items before eviction.
-   * @param {boolean} [options.compress=true] - Whether to compress stored values.
-   * @param {boolean} [options.encrypt=false] - Whether to encrypt stored values.
-   * @param {Buffer} [options.initVector=crypto.randomBytes(16)] - Initialization vector for encryption.
-   * @param {Buffer} [options.securityKey=crypto.randomBytes(32)] - Security key for encryption.
-   * @param {KVFunction<K, V>} [options.onEvicted] - Callback function invoked on eviction.
-   * @param {boolean} [options.writeThrough=false] - Whether to use write-through caching with Redis.
-   * @param {object} [options.redisConfig] - Redis configuration options.
-   * @param {string} options.redisConfig.user - Redis username.
-   * @param {string} [options.redisConfig.pass] - Redis password.
-   * @param {string} options.redisConfig.host - Redis host.
+   * @param {SuperLRUOptions<K, V>} options - Configuration options.
    */
-  constructor({
-    maxSize,
-    compress = true,
-    encrypt = false,
-    initVector = crypto.randomBytes(16),
-    securityKey = crypto.randomBytes(32),
-    onEvicted,
-    writeThrough = false,
-    redisConfig
-  }: {
-    maxSize: number
-    compress?: boolean
-    encrypt?: boolean
-    initVector?: Buffer
-    securityKey?: Buffer
-    onEvicted?: KVFunction<K, V>
-    writeThrough?: boolean
-    redisConfig?: {
-      user: string
-      pass?: string
-      host: string
+  constructor(options: SuperLRUOptions<K, V>) {
+    // Destructure with defaults AFTER validation
+    const {
+      maxSize,
+      compress = true,
+      encrypt = false,
+      initVector = crypto.randomBytes(16), // Default only used if encrypt=true and user didn't provide
+      securityKey = crypto.randomBytes(32), // Default only used if encrypt=true and user didn't provide
+      onEvicted,
+      writeThrough = false,
+      redisConfig
+    } = options
+
+    // *** VALIDATIONS FIRST ***
+    if (maxSize <= 0) {
+      throw new Error('maxSize must be a positive number')
     }
-  }) {
-    if (redisConfig != null) {
-      if (redisConfig.pass == null) {
-        redisConfig.pass = ''
-      }
-      const url = `redis://${redisConfig.user}:${redisConfig.pass}@${redisConfig.host}`
-      this.redis = createClient({ url })
-      // Connect to Redis.
-      this.redis.connect().catch(console.error)
+    // Check the *original* options object before defaults were applied for encryption keys
+    if (encrypt && (options.initVector === undefined || options.securityKey === undefined)) {
+      throw new Error('initVector and securityKey are required when encrypt is true')
     }
     if (writeThrough && redisConfig == null) {
       throw new Error('writeThrough requires redisConfig to be defined')
     }
 
+    // *** ASSIGN PROPERTIES ***
     this.cache = new Map()
     this.capacity = maxSize
     this.onEvicted = onEvicted
     this.writeThrough = writeThrough
     this.compress = compress
     this.encrypt = encrypt
-    if (encrypt) {
+
+    // *** INITIALIZE DEPENDENCIES (Encryption, Redis) ***
+    if (this.encrypt) {
+      // Use the validated/defaulted keys
       this.encryption = {
         algo: 'aes-256-cbc',
         initVector,
         securityKey
       }
     } else {
+      // Provide dummy buffers even if not encrypting to satisfy type, won't be used
       this.encryption = {
         algo: 'aes-256-cbc',
         initVector: Buffer.alloc(16, 0),
         securityKey: Buffer.alloc(32, 0)
       }
+    }
+
+    // Initialize Redis client *only once* if needed
+    if (this.writeThrough && redisConfig) {
+      const redisPass = redisConfig.pass ?? ''
+      const url = `redis://${redisConfig.user}:${redisPass}@${redisConfig.host}`
+      this.redis = createClient({ url })
+      this.redis.connect().catch(err => {
+        // Log error, but don't prevent cache from working in memory
+        console.error('SuperLRU: Failed to connect to Redis:', err)
+      })
     }
   }
 
@@ -315,42 +342,55 @@ export class SuperLRU<K, V extends StandardType> implements Cache<K, V> {
     if (node) {
       this.counters.hits++
       this._moveToHead(node)
-      return this.valueOut(node.storedValue)
+      return this.valueOut(node.storedValue, node.originalType)
     }
     this.counters.misses++
-    if (this.writeThrough && this.redis) {
-      const redisKey = md5(key as StandardType)
-      const fromRedis = await this.redis.get(redisKey)
-      if (fromRedis != null) {
-        const value = this.valueOut(fromRedis) as V
-        await this.set(key, value)
-        return value
+    if (this.writeThrough && this.redis && this.redis.isOpen) {
+      try {
+        const redisKey = md5(key as StandardType)
+        // Redis stores the processed value (string) and the original type separately
+        const redisResult = await this.redis.hGetAll(redisKey)
+
+        if (redisResult && redisResult.value && redisResult.type) {
+          const storedValue = redisResult.value
+          const originalType = redisResult.type
+          const value = this.valueOut(storedValue, originalType) as V
+
+          // Add the value retrieved from Redis back into the LRU cache
+          // This set operation could potentially cause an eviction
+          // We pass the already processed value and type to avoid reprocessing
+          await this._setInternal(key, value, storedValue, originalType)
+
+          // Since set() was called, it moved the node to head.
+          // We count this as a 'miss' initially, but the subsequent 'set'
+          // effectively makes it available for future hits.
+          return value
+        }
+      } catch (error) {
+        console.error(`SuperLRU: Error getting key ${String(key)} from Redis:`, error)
+        // Treat Redis error as a cache miss
       }
     }
     return null
   }
 
   /**
-   * Sets a key-value pair in the cache.
-   * Updates the node if the key exists or adds a new node otherwise.
-   * Evicts the least recently used item if capacity is exceeded.
-   * @param {K} key - The key to set.
-   * @param {V} value - The value to store.
-   * @returns {Promise<void>} A promise that resolves when the operation completes.
+   * Internal set method used by get() after fetching from Redis.
+   * Avoids reprocessing the value and ensures correct type handling.
+   * @private
    */
-  public async set(key: K, value: V): Promise<void> {
-    const processed = (this.compress || this.encrypt)
-      ? this.valueIn(value)
-      : value
+  private async _setInternal(key: K, originalValue: V, storedValue: string | V, originalType: string): Promise<void> {
     let node = this.cache.get(key)
     if (node) {
-      node.storedValue = processed
+      node.storedValue = storedValue
+      node.originalType = originalType
       node.timestamp = Date.now()
       this._moveToHead(node)
     } else {
       const newNode: ListNode<K, V> = {
         key,
-        storedValue: processed,
+        storedValue,
+        originalType,
         prev: null,
         next: null,
         timestamp: Date.now()
@@ -364,25 +404,86 @@ export class SuperLRU<K, V extends StandardType> implements Cache<K, V> {
           this.cache.delete(tailNode.key)
           this.size--
           if (this.onEvicted) {
-            const evictedValue = this.valueOut(tailNode.storedValue)
-            this.onEvicted(tailNode.key, evictedValue as V)
+            try {
+              // Use the already known original value for the callback
+              const evictedValue = this.valueOut(tailNode.storedValue, tailNode.originalType)
+              this.onEvicted(tailNode.key, evictedValue as V)
+            } catch (err) {
+              console.error(`SuperLRU: Error in onEvicted callback for key ${String(tailNode.key)}:`, err)
+            }
           }
         }
       }
     }
-    if (this.writeThrough && this.redis) {
-      const hash = md5(key as StandardType)
-      let storeValue: string =
-        typeof processed === 'string'
-          ? processed
-          : JSON.stringify(processed)
-      await this.redis.set(hash, storeValue)
+    // No need to write back to Redis here, as it was just fetched
+  }
+
+  /**
+   * Sets a key-value pair in the cache.
+   * Updates the node if the key exists or adds a new node otherwise.
+   * Evicts the least recently used item if capacity is exceeded.
+   * @param {K} key - The key to set.
+   * @param {V} value - The value to store.
+   * @returns {Promise<void>} A promise that resolves when the operation completes.
+   */
+  public async set(key: K, value: V): Promise<void> {
+    const originalType = typeof value
+    const processedValue = this.valueIn(value) // This is now always a string if compress/encrypt is on
+    let node = this.cache.get(key)
+
+    if (node) {
+      node.storedValue = processedValue
+      node.originalType = originalType
+      node.timestamp = Date.now()
+      this._moveToHead(node)
+    } else {
+      const newNode: ListNode<K, V> = {
+        key,
+        storedValue: processedValue,
+        originalType,
+        prev: null,
+        next: null,
+        timestamp: Date.now()
+      }
+      this.cache.set(key, newNode)
+      this._addNode(newNode)
+      this.size++
+      if (this.size > this.capacity) {
+        const tailNode = this._popTail()
+        if (tailNode) {
+          this.cache.delete(tailNode.key)
+          this.size--
+          if (this.onEvicted) {
+            try {
+              const evictedValue = this.valueOut(tailNode.storedValue, tailNode.originalType)
+              this.onEvicted(tailNode.key, evictedValue as V)
+            } catch (err) {
+              console.error(`SuperLRU: Error in onEvicted callback for key ${String(tailNode.key)}:`, err)
+            }
+          }
+        }
+      }
+    }
+
+    if (this.writeThrough && this.redis && this.redis.isOpen) {
+      try {
+        const hash = md5(key as StandardType)
+        // Store processed value and original type in Redis hash
+        await this.redis.hSet(hash, {
+          value: processedValue as string, // Should be string after valueIn if compress/encrypt
+          type: originalType
+        })
+      } catch (error) {
+        console.error(`SuperLRU: Error setting key ${String(key)} in Redis:`, error)
+        // Consider error handling strategy - should this throw?
+      }
     }
   }
 
   /**
    * Removes a key and its value from the cache.
    * Also removes the key from Redis if write-through is enabled.
+   * Calls the onEvicted callback if provided.
    * @param {K} key - The key to remove.
    * @returns {Promise<void>} A promise that resolves when the operation completes.
    */
@@ -392,13 +493,59 @@ export class SuperLRU<K, V extends StandardType> implements Cache<K, V> {
       this._removeNode(node)
       this.cache.delete(key)
       this.size--
+
+      // Call onEvicted callback if defined
       if (this.onEvicted) {
-        const value = this.valueOut(node.storedValue)
-        this.onEvicted(key, value as V)
+        try {
+          const value = this.valueOut(node.storedValue, node.originalType)
+          this.onEvicted(key, value as V)
+        } catch (err) {
+          console.error(`SuperLRU: Error in onEvicted callback during unset for key ${String(key)}:`, err)
+        }
+      }
+
+      // Delete from Redis only if the key existed in the cache
+      if (this.writeThrough && this.redis && this.redis.isOpen) {
+        try {
+          await this.redis.del(md5(key as StandardType))
+        } catch (error) {
+          console.error(`SuperLRU: Error deleting key ${String(key)} from Redis:`, error)
+          // Consider error handling strategy
+        }
       }
     }
-    if (this.writeThrough && this.redis) {
-      await this.redis.del(md5(key as StandardType))
+    // If node doesn't exist, do nothing (including not calling Redis)
+  }
+
+  /**
+   * Removes all entries from the in-memory cache.
+   * If writeThrough is enabled, it also attempts to delete the corresponding keys from Redis.
+   * Does **not** call the onEvicted callback for cleared items.
+   * @returns {Promise<void>} A promise that resolves when the operation completes.
+   */
+  public async clear(): Promise<void> {
+    const keysToDelete = Array.from(this.cache.keys()) // Get keys before clearing
+
+    // Clear in-memory structures
+    this.cache.clear()
+    this.head = null
+    this.tail = null
+    this.size = 0
+    // Note: We are not calling onEvicted for cleared items here.
+
+    // Clear from Redis if writeThrough is enabled
+    if (this.writeThrough && this.redis && this.redis.isOpen) {
+      if (keysToDelete.length > 0) {
+        const redisKeys = keysToDelete.map(key => md5(key as StandardType))
+        try {
+          // Use DEL with multiple keys for efficiency
+          await this.redis.del(redisKeys)
+        } catch (error) {
+          // Log or handle Redis deletion errors appropriately
+          console.error('SuperLRU: Error clearing keys from Redis:', error)
+          // Depending on requirements, might re-throw or just log
+        }
+      }
     }
   }
 
@@ -408,21 +555,28 @@ export class SuperLRU<K, V extends StandardType> implements Cache<K, V> {
    */
   public allEntries(): [K, V][] {
     const entries: [K, V][] = []
-    for (const node of this.cache.values()) {
-      const value =
-        this.compress || this.encrypt
-          ? (this.valueOut(node.storedValue) as V)
-          : (node.storedValue as V)
-      entries.push([node.key, value])
+    // Iterate in MRU order (head to tail) for potential consistency
+    let node = this.head
+    while (node) {
+      try {
+        const value = this.valueOut(node.storedValue, node.originalType) as V
+        entries.push([node.key, value])
+      } catch (err) {
+        console.error(`SuperLRU: Error processing value for key ${String(node.key)} during allEntries:`, err)
+        // Skip problematic entry or handle differently?
+      }
+      node = node.next
     }
     return entries
   }
 
   /**
-   * Returns and resets the cache statistics.
+   * Returns cache statistics (hit count, miss count, current size).
+   * If `flush` is true, resets hit and miss counters to zero after returning.
+   * @param {boolean} [flush=false] - Whether to reset hit/miss counters.
    * @returns {{ hits: number; misses: number; size: number }} An object containing hit and miss counts and current cache size.
    */
-  public stats(flush: boolean = false) {
+  public stats(flush: boolean = false): { hits: number; misses: number; size: number } {
     const stats = {
       hits: this.counters.hits,
       misses: this.counters.misses,
@@ -436,48 +590,69 @@ export class SuperLRU<K, V extends StandardType> implements Cache<K, V> {
 
   /**
    * Processes the input value by applying encryption and/or compression.
+   * Returns the processed value (always string if compression or encryption is enabled).
    * @private
    * @param {V} value - The value to process.
    * @returns {string | V} The processed value.
    */
   private valueIn(value: V): string | V {
-    let data: StandardType = value
+    let processedData: StandardType = value // Start with original value
+
     if (this.encrypt) {
-      const { encrypted, type } = encryptValue(value, this.encryption)
-      data = encrypted
-      if (this.valueType == null) {
-        this.valueType = type
-      }
-      if (!this.compress) {
-        return data as string
-      }
-    } else {
-      if (this.valueType == null) {
-        this.valueType = typeof value
-      }
+      const { encrypted } = encryptValue(value, this.encryption)
+      processedData = encrypted // Encrypted data is now the base for potential compression
     }
+
     if (this.compress) {
-      return compressValue(data) as string
+      // Compress the potentially already encrypted data, or the original data
+      // compressValue handles stringification and undefined/null internally
+      processedData = compressValue(processedData)
     }
-    return data as V
+
+    // If neither encrypt nor compress is true, return the original value
+    // Otherwise, return the string result of encryption/compression
+    return this.encrypt || this.compress ? (processedData as string) : value
   }
 
   /**
    * Processes the stored value by applying decompression and/or decryption.
+   * Requires the original type to correctly decrypt.
    * @private
-   * @param {string | V | null} value - The stored value to process.
+   * @param {string | V | null} storedValue - The stored value to process.
+   * @param {string} originalType - The original type ('object', 'string', 'number', 'undefined').
    * @returns {V | null} The original value.
    */
-  private valueOut(value: string | V | null): V | null {
-    if (value == null) return null
-    let data: StandardType = value
-    if (this.compress && typeof value === 'string') {
-      data = JSON.parse(decompressValue(value))
+  private valueOut(storedValue: string | V | null, originalType: string): V | null {
+    if (storedValue === null) return null
+
+    let dataToProcess: StandardType = storedValue
+
+    if (this.compress && typeof storedValue === 'string') {
+      const decompressedString = decompressValue(storedValue)
+      // If encrypted, the decompressed value is the base64 encrypted string.
+      // If only compressed, it's the JSON representation (or "null").
+      dataToProcess = decompressedString
     }
-    if (this.encrypt && typeof data === 'string') {
-      data = decryptValue(data, this.valueType as string, this.encryption)
+
+    if (this.encrypt && typeof dataToProcess === 'string') {
+      // Decrypt requires the original type hint
+      dataToProcess = decryptValue(dataToProcess, originalType, this.encryption)
+    } else if (!this.encrypt && typeof dataToProcess === 'string') {
+      // If only compressed (or neither), parse the stringified value
+      try {
+        // Handle "null" string explicitly, return null
+        if (dataToProcess === 'null') return null
+        dataToProcess = JSON.parse(dataToProcess)
+      } catch (e) {
+        // If JSON.parse fails, it might be a simple string that wasn't JSON originally
+        // or potentially corrupted data. Return the string itself.
+        console.warn('SuperLRU: Failed to parse stored value, returning as string.', e)
+        // dataToProcess remains the string
+      }
     }
-    return data as V
+
+    // At this point, dataToProcess should be the original type (or null)
+    return dataToProcess as V
   }
 }
 
