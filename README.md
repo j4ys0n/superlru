@@ -70,6 +70,10 @@ await cache.clear()
 | `redisConfig.user` | `string`   | -                        | Redis username                                                                                               |
 | `redisConfig.pass` | `string`   | `''`                     | Redis password                                                                                               |
 | `redisConfig.host` | `string`   | -                        | Redis host and port (e.g., 'localhost:6379')                                                                 |
+| `stateSync`        | `Object`   | `undefined`              | Enable Redis-backed shared cache state only (LRU metadata, no value payloads)                                |
+| `stateSync.namespace` | `string` | _required when set_     | Namespace used for shared state keys in Redis                                                                 |
+
+`writeThrough` and `stateSync` are mutually exclusive.
 
 ## Advanced Usage
 
@@ -92,6 +96,32 @@ const cache = new SuperLRU<string, object>({
 await cache.set('persistentKey', { data: 'persists' })
 await cache.clear() // Clears in-memory and attempts to delete keys from Redis
 ```
+
+### Redis Shared State (HA Deployments)
+
+Use `stateSync` when multiple API instances must share cache state (LRU order/evictions) but should not store cache values in Redis.
+
+```typescript
+const cache = new SuperLRU<string, object>({
+  maxSize: 1000,
+  stateSync: {
+    namespace: 'my-service-cache'
+  },
+  redisConfig: {
+    user: 'username',
+    pass: 'password',
+    host: 'localhost:6379'
+  }
+})
+
+await cache.set('k1', { data: 'instance-local value' })
+```
+
+In this mode:
+- Redis stores only key membership and LRU ordering metadata.
+- `get()` returns `null` on local misses (it does not read values from Redis).
+- `unset()` removes shared state globally, even if the key is not present in local memory.
+- `clear()` removes the namespace's shared state keys from Redis.
 
 ### Encryption
 
@@ -178,6 +208,9 @@ constructor(options: {
     pass?: string;
     host: string;
   };
+  stateSync?: {
+    namespace: string;
+  };
 })
 ```
 
@@ -188,10 +221,10 @@ constructor(options: {
 #### Methods
 
 - `has(key: K): boolean` - Checks if a key exists in the cache. Increments hit/miss counter.
-- `get(key: K): Promise<V | null>` - Retrieves a value from the cache. Updates LRU order on hit. Attempts Redis fetch on miss if `writeThrough` is enabled. Increments hit/miss counter.
-- `set(key: K, value: V): Promise<void>` - Stores or updates a value in the cache. Updates LRU order. Writes to Redis if `writeThrough` is enabled. Handles eviction if capacity is exceeded.
-- `unset(key: K): Promise<void>` - Removes a value from the cache. Calls `onEvicted` callback if defined. Deletes from Redis if `writeThrough` is enabled.
-- `clear(): Promise<void>` - Removes all entries from the in-memory cache. If `writeThrough` is enabled, it also attempts to delete the corresponding keys from Redis. Does **not** call `onEvicted`.
+- `get(key: K): Promise<V | null>` - Retrieves a value from the cache. Updates LRU order on hit. Attempts Redis fetch on miss if `writeThrough` is enabled. In `stateSync` mode, local misses do not fetch values from Redis.
+- `set(key: K, value: V): Promise<void>` - Stores or updates a value in the cache. Updates LRU order. Writes values to Redis only when `writeThrough` is enabled. In `stateSync` mode, only Redis state metadata is updated.
+- `unset(key: K): Promise<void>` - Removes a value from the cache. Calls `onEvicted` callback if defined. Deletes value payload from Redis if `writeThrough` is enabled. In `stateSync` mode, removes shared state for the key globally.
+- `clear(): Promise<void>` - Removes all entries from the in-memory cache. If `writeThrough` is enabled, it also attempts to delete the corresponding value keys from Redis. In `stateSync` mode, it clears shared state namespace keys in Redis. Does **not** call `onEvicted`.
 - `allEntries(): Array<[K, V]>` - Returns an array of all `[key, value]` pairs currently in the cache. Values are decompressed/decrypted as needed.
 - `stats(flush?: boolean): { hits: number; misses: number; size: number }` - Returns cache statistics (hit count, miss count, current size). If `flush` is true, resets hit and miss counters to zero after returning.
 

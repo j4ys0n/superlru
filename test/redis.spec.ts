@@ -10,6 +10,13 @@ const createMockRedisClient = () => ({
   // Use hSet/hGetAll for storing value + type
   hSet: jest.fn().mockResolvedValue(1),
   hGetAll: jest.fn().mockResolvedValue(null), // Default to miss
+  zAdd: jest.fn().mockResolvedValue(1),
+  zCard: jest.fn().mockResolvedValue(0),
+  zRange: jest.fn().mockResolvedValue([]),
+  zRem: jest.fn().mockResolvedValue(1),
+  sAdd: jest.fn().mockResolvedValue(1),
+  sRem: jest.fn().mockResolvedValue(1),
+  sIsMember: jest.fn().mockResolvedValue(true),
   del: jest.fn().mockResolvedValue(1), // Simulate successful deletion
   on: jest.fn(), // Mock the 'on' method for event listeners if needed
   isOpen: true, // Assume connected after connect() resolves
@@ -111,6 +118,163 @@ describe('SuperLRU with Redis Write-Through', () => {
       })
 
       expect(createClient).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('Redis shared state mode', () => {
+    const stateNamespace = 'ha-superlru'
+    const stateMembersKey = `${stateNamespace}:members`
+    const stateLruKey = `${stateNamespace}:lru`
+
+    it('should create and connect a Redis client when stateSync is enabled', () => {
+      const cache = new SuperLRU<string, string>({
+        maxSize: 5,
+        compress: false,
+        stateSync: { namespace: stateNamespace },
+        redisConfig: redisConfig
+      })
+
+      expect(createClient).toHaveBeenCalledTimes(1)
+      expect(createClient).toHaveBeenCalledWith({
+        url: `redis://${redisConfig.user}:${redisConfig.pass}@${redisConfig.host}`
+      })
+      expect(currentTestRedisClient?.connect).toHaveBeenCalledTimes(1)
+    })
+
+    it('should throw error when stateSync is enabled without redisConfig', () => {
+      expect(() => {
+        new SuperLRU<string, string>({
+          maxSize: 5,
+          stateSync: { namespace: stateNamespace }
+        })
+      }).toThrow('stateSync requires redisConfig to be defined')
+      expect(createClient).not.toHaveBeenCalled()
+    })
+
+    it('should throw error when stateSync namespace is empty', () => {
+      expect(() => {
+        new SuperLRU<string, string>({
+          maxSize: 5,
+          stateSync: { namespace: '   ' },
+          redisConfig: redisConfig
+        })
+      }).toThrow('stateSync.namespace must be a non-empty string')
+      expect(createClient).not.toHaveBeenCalled()
+    })
+
+    it('should throw error when writeThrough and stateSync are both enabled', () => {
+      expect(() => {
+        new SuperLRU<string, string>({
+          maxSize: 5,
+          writeThrough: true,
+          stateSync: { namespace: stateNamespace },
+          redisConfig: redisConfig
+        })
+      }).toThrow('writeThrough and stateSync cannot both be enabled')
+      expect(createClient).not.toHaveBeenCalled()
+    })
+
+    it('should persist only state metadata in Redis on set()', async () => {
+      const cache = new SuperLRU<string, string>({
+        maxSize: 5,
+        compress: false,
+        stateSync: { namespace: stateNamespace },
+        redisConfig: redisConfig
+      })
+      mockRedisClientInstance.zCard.mockResolvedValue(1)
+
+      await cache.set('state-key', 'state-value')
+      const stateMember = md5('state-key')
+
+      expect(mockRedisClientInstance.hSet).not.toHaveBeenCalled()
+      expect(mockRedisClientInstance.sAdd).toHaveBeenCalledWith(stateMembersKey, stateMember)
+      expect(mockRedisClientInstance.zAdd).toHaveBeenCalledWith(
+        stateLruKey,
+        expect.objectContaining({ score: expect.any(Number), value: stateMember })
+      )
+      expect(mockRedisClientInstance.zCard).toHaveBeenCalledWith(stateLruKey)
+    })
+
+    it('should evict local values when shared state eviction removes their member', async () => {
+      const onEvicted = jest.fn()
+      const key1 = 'key-1'
+      const key2 = 'key-2'
+      const member1 = md5(key1)
+
+      const cache = new SuperLRU<string, string>({
+        maxSize: 2,
+        compress: false,
+        onEvicted,
+        stateSync: { namespace: stateNamespace },
+        redisConfig: redisConfig
+      })
+      mockRedisClientInstance.zCard.mockResolvedValueOnce(1).mockResolvedValueOnce(3)
+      mockRedisClientInstance.zRange.mockResolvedValueOnce([member1])
+
+      await cache.set(key1, 'value-1')
+      await cache.set(key2, 'value-2')
+
+      expect(mockRedisClientInstance.zRange).toHaveBeenCalledWith(stateLruKey, 0, 0)
+      expect(mockRedisClientInstance.zRem).toHaveBeenCalledWith(stateLruKey, [member1])
+      expect(mockRedisClientInstance.sRem).toHaveBeenCalledWith(stateMembersKey, [member1])
+      expect(await cache.get(key1)).toBeNull()
+      expect(onEvicted).toHaveBeenCalledWith(key1, 'value-1')
+    })
+
+    it('should treat local entries as stale when shared state no longer contains them', async () => {
+      const key = 'stale-key'
+      const stateMember = md5(key)
+
+      const cache = new SuperLRU<string, string>({
+        maxSize: 5,
+        compress: false,
+        stateSync: { namespace: stateNamespace },
+        redisConfig: redisConfig
+      })
+      mockRedisClientInstance.zCard.mockResolvedValue(1)
+
+      await cache.set(key, 'stale-value')
+      const zAddCallsAfterSet = mockRedisClientInstance.zAdd.mock.calls.length
+      mockRedisClientInstance.sIsMember.mockResolvedValue(false)
+
+      expect(await cache.get(key)).toBeNull()
+      expect(cache.has(key)).toBe(false)
+      expect(mockRedisClientInstance.sIsMember).toHaveBeenCalledWith(stateMembersKey, stateMember)
+      expect(mockRedisClientInstance.zAdd.mock.calls.length).toBe(zAddCallsAfterSet)
+    })
+
+    it('should remove shared state on unset even when value is not present locally', async () => {
+      const cache = new SuperLRU<string, string>({
+        maxSize: 5,
+        compress: false,
+        stateSync: { namespace: stateNamespace },
+        redisConfig: redisConfig
+      })
+
+      await cache.unset('ghost-key')
+      const stateMember = md5('ghost-key')
+
+      expect(mockRedisClientInstance.zRem).toHaveBeenCalledWith(stateLruKey, stateMember)
+      expect(mockRedisClientInstance.sRem).toHaveBeenCalledWith(stateMembersKey, stateMember)
+      expect(mockRedisClientInstance.del).not.toHaveBeenCalled()
+    })
+
+    it('should clear shared state namespace keys on clear()', async () => {
+      mockRedisClientInstance.zCard.mockResolvedValue(1)
+      const cache = new SuperLRU<string, string>({
+        maxSize: 5,
+        compress: false,
+        stateSync: { namespace: stateNamespace },
+        redisConfig: redisConfig
+      })
+
+      await cache.set('key-1', 'value-1')
+      mockRedisClientInstance.del.mockClear()
+
+      await cache.clear()
+
+      expect(mockRedisClientInstance.del).toHaveBeenCalledTimes(1)
+      expect(mockRedisClientInstance.del).toHaveBeenCalledWith([stateMembersKey, stateLruKey])
     })
   })
 
