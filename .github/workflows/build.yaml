@@ -7,7 +7,7 @@ on:
       - '**.md'
 
 jobs:
-  build-and-publish:
+  build:
     runs-on: ubuntu-latest
 
     steps:
