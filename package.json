@@ -1,7 +1,7 @@
 {
   "name": "superlru",
   "description": "Super LRU Cache. Compression, Encryption and backed by Redis",
-  "version": "1.2.0",
+  "version": "1.4.0",
   "author": {
     "name": "jayson jacobs",
     "email": "j4ys0n@gmail.com"
@@ -30,14 +30,19 @@
     "typescript": "^5.7.3"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20.0.0"
   },
   "license": "Apache-2.0",
   "main": "./lib/index.js",
   "types": "./lib/index.d.ts",
+  "files": [
+    "lib",
+    "README.md"
+  ],
   "scripts": {
     "lint": "eslint . --ext .ts --config .eslintrc",
     "build": "rm -rf lib && tsc -b",
+    "prepare": "npm run build",
     "test": "jest --config jest.config.json",
     "format": "git ls-files | grep -E \"\\.(jsx?|tsx?|css|md|ya?ml|json)$\" | xargs prettier --write"
   }

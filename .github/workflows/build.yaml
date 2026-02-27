@@ -3,9 +3,11 @@ name: Build & test on PR open/push
 on:
   pull_request:
     types: [opened, synchronize]
+    paths-ignore:
+      - '**.md'
 
 jobs:
-  build-and-publish:
+  build:
     runs-on: ubuntu-latest
 
     steps:
